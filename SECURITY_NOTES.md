@@ -1,0 +1,3 @@
+- 2026-10-30: Anonymous GET /recipes → 200 OK, returns full recipe catalog (no identity required).
+- 2026-10-30: Anonymous PATCH /recipes/<ID> → 200 OK, change to recipe persisted and is visible on subsequent GET (no identity required).
+- 2026-10-30: Anonymous DELETE /recipes/2 → 204 No Content; recipe 2 is no longer available on subsequent GET (no identity required).
