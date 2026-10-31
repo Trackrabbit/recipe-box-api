@@ -86,6 +86,35 @@ def register():
         "email": email
     }), 201
 
+@app.post("/login")
+def login():
+    data = request.get_json(silent=True) or {}
+    
+    # Allow logging in via either username or email
+    identifier = str(data.get("username") or data.get("email") or "").strip()
+    password = str(data.get("password") or "")
+
+    if not identifier or not password:
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    db = get_db()
+    # Query for the user by matching either username or normalized email
+    row = db.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ? OR email = ?",
+        (identifier, identifier.lower()),
+    ).fetchone()
+
+    # Generic check: fails if user not found OR password hash doesn't match
+    if row is None or not verify_password(row["password_hash"], password):
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    return jsonify({
+        "user": {
+            "id": row["id"],
+            "username": row["username"]
+        }
+    }), 200
+
 @app.get("/recipes/<int:recipe_id>")
 def get_recipe(recipe_id):
     row = get_db().execute(
@@ -165,4 +194,4 @@ def delete_recipe(recipe_id):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+   app.run(port=5001, debug=True)
