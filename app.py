@@ -10,6 +10,7 @@ import sqlite3
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from flask import Flask, g, jsonify, request, current_app
+from functools import wraps
 
 from dotenv import load_dotenv
 
@@ -56,6 +57,34 @@ def recipe_to_dict(row):
         "is_public": bool(row["is_public"]),
     }
 
+def require_auth(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        auth_header = request.headers.get("Authorization")
+
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"error": "authentication required"}), 401
+
+        token = auth_header.split(" ", 1)[1]
+
+        try:
+            payload = jwt.decode(
+                token,
+                JWT_SECRET,
+                algorithms=["HS256"],
+            )
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "token expired, please log in again"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "invalid token"}), 401
+
+        # Store user info on `g` for downstream use
+        g.current_user_id = payload.get("sub")
+        g.current_is_admin = payload.get("role", "user") == "admin"
+
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 @app.get("/")
 def hello():
@@ -63,29 +92,9 @@ def hello():
 
 
 @app.get("/recipes")
+@require_auth
 def list_recipes():
-
-    auth_header = request.headers.get("Authorization")
-
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return jsonify({"error": "authentication required"}), 401
-
-    token = auth_header.split(" ", 1)[1]
-
-    try:
-        print("JWT_SECRET loaded?", JWT_SECRET is not None)
-        print("JWT_SECRET value:", repr(JWT_SECRET))
-        payload = jwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=["HS256"],
-        )
-    except jwt.ExpiredSignatureError:
-        return jsonify({"error": "token expired, please log in again"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"error": "invalid token"}), 401
-
-    user_id = payload.get("sub")
+    user_id = g.current_user_id
     
     rows = get_db().execute("SELECT * FROM recipes ORDER BY id").fetchall()
     return jsonify([recipe_to_dict(r) for r in rows])
@@ -199,32 +208,14 @@ def get_recipe(recipe_id):
 
 
 @app.post("/recipes")
+@require_auth
 def create_recipe():
-    auth_header = request.headers.get("Authorization")
-
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return jsonify({"error": "authentication required"}), 401
-
-    token = auth_header.split(" ", 1)[1]
-
-    try:
-        print("JWT_SECRET loaded?", JWT_SECRET is not None)
-        print("JWT_SECRET value:", repr(JWT_SECRET))
-        payload = jwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=["HS256"],
-        )
-    except jwt.ExpiredSignatureError:
-        return jsonify({"error": "token expired, please log in again"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"error": "invalid token"}), 401
-
-    user_id = payload.get("sub")
+    user_id = g.current_user_id
 
     data = request.get_json(silent=True)
     if not data or not data.get("title") or not data.get("ingredients"):
         return jsonify({"error": "title and ingredients are required"}), 400
+
     db = get_db()
     try:
         cur = db.execute(
@@ -241,36 +232,17 @@ def create_recipe():
         db.commit()
     except sqlite3.IntegrityError:
         return jsonify({"error": "a recipe with that title already exists"}), 409
+
     row = db.execute(
         "SELECT * FROM recipes WHERE id = ?", (cur.lastrowid,)
     ).fetchone()
     return jsonify(recipe_to_dict(row)), 201
-
-
+ 
 @app.patch("/recipes/<int:recipe_id>")
+@require_auth
 def update_recipe(recipe_id):
-    auth_header = request.headers.get("Authorization")
-
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return jsonify({"error": "authentication required"}), 401
-
-    token = auth_header.split(" ", 1)[1]
-
-    try:
-        print("JWT_SECRET loaded?", JWT_SECRET is not None)
-        print("JWT_SECRET value:", repr(JWT_SECRET))
-        payload = jwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=["HS256"],
-        )
-    except jwt.ExpiredSignatureError:
-        return jsonify({"error": "token expired, please log in again"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"error": "invalid token"}), 401
-
-    user_id = payload.get("sub")
-    is_admin = payload.get("role", "user") == "admin"
+    user_id = g.current_user_id
+    is_admin = g.current_is_admin
 
     data = request.get_json(silent=True)
     if not data:
@@ -320,7 +292,6 @@ def update_recipe(recipe_id):
     except sqlite3.IntegrityError:
         return jsonify({"error": "a recipe with that title already exists"}), 409
 
-    # `cur.rowcount` should be 1 here, but we can keep this check
     if cur.rowcount == 0:
         return jsonify({"error": "recipe not found"}), 404
 
@@ -330,24 +301,11 @@ def update_recipe(recipe_id):
     ).fetchone()
     return jsonify(recipe_to_dict(row))
 
-
 @app.delete("/recipes/<int:recipe_id>")
+@require_auth
 def delete_recipe(recipe_id):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return jsonify({"error": "authentication required"}), 401
-
-    token = auth_header.split(" ", 1)[1]
-
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError:
-        return jsonify({"error": "token expired, please log in again"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"error": "invalid token"}), 401
-
-    user_id = payload.get("sub")
-    is_admin = payload.get("role", "user") == "admin"
+    user_id = g.current_user_id
+    is_admin = g.current_is_admin
 
     db = get_db()
 
@@ -364,12 +322,11 @@ def delete_recipe(recipe_id):
     if not (is_owner or is_admin):
         return jsonify({"error": "forbidden: not the recipe owner or admin"}), 403
 
-    # 3) Owner is allowed → delete
+    # 3) Owner/admin is allowed → delete
     cur = db.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
     db.commit()
 
     return "", 204
-
 
 if __name__ == "__main__":
    app.run(port=5001, debug=True)
